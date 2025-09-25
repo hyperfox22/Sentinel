@@ -1,0 +1,101 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/2d55a846-1cfd-4ebe-97f5-8afee24831f2')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/2d55a846-1cfd-4ebe-97f5-8afee24831f2')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2022-09-01-preview",
+            "properties": {
+                "displayName": "MSSE - Custom - Keyvault suspicious vault access policy modifications",
+                "description": "Adding and removing users for multiple keyvault access roles through vault access policies  in a short time interval is captured in this rule.",
+                "severity": "Medium",
+                "enabled": true,
+                "query": "// delta max between adding and removing operation\nlet l_delta = 15m;\n// delta min between adding and removing operation\nlet l_min_delta = 1m;\n// We are interested in \"patch\" operations on Key Vaults where users were added \nAzureDiagnostics\n| where ResourceType == \"VAULTS\"\n| where OperationName == \"VaultPatch\"\n| where ResultType == \"Success\"\n| extend UserObjectAdded = column_ifexists(\"addedAccessPolicy_ObjectId_g\", \"None\")\n| extend AddedActor = column_ifexists(\"identity_claim_http_schemas_xmlsoap_org_ws_2005_05_identity_claims_upn_s\", \"None\")\n| extend KeyAccessAdded = tostring(column_ifexists(\"addedAccessPolicy_Permissions_keys_s\", \"None\"))\n| extend SecretAccessAdded = tostring(column_ifexists(\"addedAccessPolicy_Permissions_secrets_s\", \"None\"))\n| extend CertAccessAdded = tostring(column_ifexists(\"addedAccessPolicy_Permissions_certificates_s\", \"None\"))\n| where UserObjectAdded != \"None\" and isnotempty(UserObjectAdded) \n| where AddedActor != \"None\" and isnotempty(AddedActor)\n| where ((KeyAccessAdded != \"None\" and isnotempty(KeyAccessAdded)) or (SecretAccessAdded != \"None\" and isnotempty(SecretAccessAdded)) or (CertAccessAdded != \"None\" and isnotempty(CertAccessAdded)))\n| project\n    AccessAddedTime=TimeGenerated,\n    ResourceType,\n    OperationName,\n    ResultType,\n    KeyVaultName=Resource,\n    AddedActor,\n    UserObjectAdded,\n    KeyAccessAdded,\n    SecretAccessAdded,\n    CertAccessAdded,\n    ResourceId,\n    ClientIPAdded=CallerIPAddress\n// We join with \"patch\" operations on Key Vaults where users were removed \n| join kind=inner ( \n    AzureDiagnostics\n    | where ResourceType == \"VAULTS\"\n    | where OperationName == \"VaultPatch\"\n    | where ResultType == \"Success\"\n    | extend RemovedActor = column_ifexists(\"identity_claim_http_schemas_xmlsoap_org_ws_2005_05_identity_claims_upn_s\", \"None\")\n    | extend UserObjectRemoved = column_ifexists(\"removedAccessPolicy_ObjectId_g\", \"None\")\n    | extend KeyAccessRemoved = tostring(column_ifexists(\"removedAccessPolicy_Permissions_keys_s\", \"None\"))\n    | extend SecretAccessRemoved = tostring(column_ifexists(\"removedAccessPolicy_Permissions_secrets_s\", \"None\"))\n    | extend CertAccessRemoved = column_ifexists(\"removedAccessPolicy_Permissions_certificates_s\", \"None\")\n    | where isnotempty(UserObjectRemoved)\n    | where ((KeyAccessRemoved != \"None\" and isnotempty(KeyAccessRemoved)) or (SecretAccessRemoved != \"None\" and isnotempty(SecretAccessRemoved)) or (CertAccessRemoved != \"None\" and isnotempty(CertAccessRemoved)))\n    | project AccessRemovedTime=TimeGenerated, ResourceType, OperationName, ResultType, KeyVaultName=Resource, RemovedActor, UserObjectRemoved, KeyAccessRemoved, SecretAccessRemoved, CertAccessRemoved, ResourceId,\n        ClientIPRemoved=CallerIPAddress)\n    on ResourceId\n| extend TimeDelta = abs(AccessRemovedTime - AccessAddedTime)\n// We are interested only in cases where accesses were removed after being added\n| where AccessRemovedTime >= AccessAddedTime\n// We are looking at a delta between adding and removing, l_delta\n| where TimeDelta < l_delta\n// We are not considering delta less than l_min_delta to avoid FPs due to deployment time or similar activities\n| where TimeDelta > l_min_delta\n| where AddedActor == RemovedActor \n| project\n    KeyVaultName,\n    Actor=RemovedActor,\n    ClientIPRemoved,\n    ClientIPAdded,\n    AccessAddedTime,\n    AccessRemovedTime,\n    TimeDelta,\n    ResourceId\n",
+                "queryFrequency": "PT6H",
+                "queryPeriod": "PT6H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Persistence"
+                ],
+                "techniques": [
+                    "T1098"
+                ],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT12H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "AzureResource"
+                        ],
+                        "groupByAlertDetails": [
+                            "DisplayName",
+                            "Severity"
+                        ],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "Actor"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "ClientIPRemoved"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "ClientIPAdded"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "AzureResource",
+                        "fieldMappings": [
+                            {
+                                "identifier": "ResourceId",
+                                "columnName": "ResourceId"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}
